@@ -1,4 +1,4 @@
-package ch.taggiasco.streams.csv
+package ch.taggiasco.streams.csvscript
 
 import java.nio.file.Paths
 import java.nio.charset.StandardCharsets
@@ -20,15 +20,7 @@ import com.typesafe.config.ConfigFactory
 object Generator {
   
   private case class EndException(msg: String) extends Exception(msg)
-  
-  
-  private def using[A <: { def close(): Unit }, B](resource: A)(f: A => B): B = {
-    try {
-        f(resource)
-    } finally {
-        resource.close()
-    }
-  }
+  private case object StopException extends Exception
   
   
   private def endApp(msg: String)(implicit system: ActorSystem): Unit = {
@@ -43,32 +35,27 @@ object Generator {
       implicit val system = ActorSystem("system")
       implicit val materializer = ActorMaterializer()
       implicit val executionContext = materializer.executionContext
-      implicit val configuration = ConfigFactory.load()
-      val columnPrefix = "column_"
       
-      
-      val x = using(io.Source.fromFile("example.txt")) { source => source.getLines }
-      
-      
-      val arglist: Array[String] = Array("--csv", "test.csv", "--output", "test.sql", "--cols", "4");
-      def isSwitch(s: String) = s.startsWith("--")
-      def getOptions(acc: Map[String, String], args: List[String]) : Map[String, String] = {
-        args match {
-          case Nil => acc
-          case key :: value :: tail if isSwitch(key) => getOptions(acc ++ Map(key -> value), args.tail)
-          case option :: tail => println("Unknown option "+option); System.exit(1); Map()
+      // if no arguments, we print help
+      if (args.length == 0) {
+        system.terminate()
+        throw StopException
+      }
+      // get config from arguments if possible
+      val config = try {
+        Config(args.toList)
+      } catch {
+        case e: ConfigException => {
+          system.terminate()
+          throw e
         }
       }
-      val options = getOptions(Map(), arglist.toList)
-      println(options)
       
       
-      val config = CsvDiffConfig(args.head, columnPrefix)
-      
+      /*
       val columns = (1 to config.columns map { n => columnPrefix+n }).toSeq
       
       val originGraph = CsvDiffParser.parse(CsvDiffFile.load(config.originFilename), columns)
-      val targetGraph = CsvDiffParser.parse(CsvDiffFile.load(config.targetFilename), columns)
       
       val futures = List(originGraph, targetGraph)
       Future.sequence(futures).onComplete {
@@ -84,7 +71,15 @@ object Generator {
           println(s"Failure: ${e.getMessage}")
           system.terminate()
       }
+      */
     } catch {
+      case StopException => {
+        println(Config.helper)
+      }
+      case ConfigException(msg) => {
+        println(s"Error in arguments")
+        println(Config.helper)
+      }
       case EndException(msg) =>
         println(s"Failure: $msg")
     }
