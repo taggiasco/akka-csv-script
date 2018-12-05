@@ -1,0 +1,5 @@
+Value 1 : %COLUMN_1%
+Value 2 : %COLUMN_2% %COLUMN_3%
+Value 3 : %COLUMN_3% %COLUMN_2%
+Value 4 : %COLUMN_4%
+Value 5 : %COLUMN_5%

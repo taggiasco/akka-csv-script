@@ -1,7 +1,9 @@
 package ch.taggiasco.streams.csvscript
 
+import java.io.File
 import java.nio.file.Paths
 import java.nio.charset.StandardCharsets
+import java.nio.file.StandardOpenOption._
 
 import akka.NotUsed
 import akka.actor.ActorSystem
@@ -51,33 +53,103 @@ object Generator {
         }
       }
       
+      // reading the template
+      val template = config.loadScriptTemplate()
       
-      /*
-      val columns = (1 to config.columns map { n => columnPrefix+n }).toSeq
+      def load(name: String): Source[ByteString, Future[IOResult]] = {
+        val path = Paths.get(name)
+        val source: Source[ByteString, Future[IOResult]] = FileIO.fromPath(path)
+        source
+      }
       
-      val originGraph = CsvDiffParser.parse(CsvDiffFile.load(config.originFilename), columns)
+      val scannerFlow: Flow[ByteString, List[ByteString], NotUsed] =
+        CsvParsing.lineScanner(CsvParsing.SemiColon)
+    
+    /*
+    
+    def reduceFlow(f: LogEntry => Particularity): Flow[LogEntry, (Particularity, LogEntry), NotUsed] = {
+      Flow[LogEntry].map(logEntry => (f(logEntry), logEntry))
+    }
+    */
       
-      val futures = List(originGraph, targetGraph)
-      Future.sequence(futures).onComplete {
-        case Success(results) =>
-          val originResults = results(0)
-          val targetResults = results(1)
-          val result = DiffExecute.compare(config, originResults, targetResults)
-          println("Results:")
-          println("--------")
-          println(result)
+      def transformerFlow(template: String): Flow[Seq[String], ByteString, NotUsed] = {
+        Flow[Seq[String]].map(datas => {
+          val res = datas.zipWithIndex.foldLeft(template)((acc, elem) => {
+            val (data, position) = elem
+            acc.replaceAll(s"%COLUMN_${position+1}%", data)
+          })
+          ByteString(res + "\n\n")
+        })
+      }
+      
+      def transformerFlowAsString(template: String): Flow[Seq[String], String, NotUsed] = {
+        Flow[Seq[String]].map(datas => {
+          val res = datas.zipWithIndex.foldLeft(template)((acc, elem) => {
+            val (data, position) = elem
+            acc.replaceAll(s"%COLUMN_${position+1}%", data)
+          })
+          res
+        })
+      }
+      
+      def parse(source: Source[ByteString, Future[IOResult]], template: String)(implicit materializer: ActorMaterializer):
+        Future[Seq[String]] = {
+        val s =
+          source
+            .via(scannerFlow)
+            .map(_.map(_.utf8String))
+            .via(transformerFlowAsString(template))
+            .runWith(Sink.seq)
+        s
+      }
+      
+      val fileSink = FileIO.toPath(
+        config.getOutputFile().toPath,
+        options = Set(CREATE, WRITE, TRUNCATE_EXISTING)
+      )
+      
+      def parseToFile(source: Source[ByteString, Future[IOResult]], template: String)(implicit materializer: ActorMaterializer):
+        Future[IOResult] = {
+        val s =
+          source
+            .via(scannerFlow)
+            .map(_.map(_.utf8String))
+            .via(transformerFlow(template))
+            .runWith(fileSink)
+        s
+      }
+      val f = parseToFile(load(config.csvFile), template)
+      f.onComplete {
+        case Success(result) => {
+          println("It's done!")
           system.terminate()
+        }
         case Failure(e) =>
           println(s"Failure: ${e.getMessage}")
           system.terminate()
       }
-      */
+      
+//      val future = parse(load(config.csvFile), template)
+//      future.onComplete {
+//        case Success(result) => {
+//          result.foreach(res => {
+//            println("Result is : ")
+//            println("---")
+//            println(res)
+//            println("---")
+//          })
+//          system.terminate()
+//        }
+//        case Failure(e) =>
+//          println(s"Failure: ${e.getMessage}")
+//          system.terminate()
+//      }
     } catch {
       case StopException => {
         println(Config.helper)
       }
       case ConfigException(msg) => {
-        println(s"Error in arguments")
+        println(s"Error in arguments: $msg")
         println(Config.helper)
       }
       case EndException(msg) =>

@@ -1,6 +1,7 @@
 package ch.taggiasco.streams.csvscript
 
 import scala.io.Source
+import java.io.File
 
 
 case class Config(
@@ -19,6 +20,14 @@ case class Config(
     }
   }
   
+  def getOutputFile(): File = {
+    val s = new File(scriptOutput.getOrElse("output.script"))
+    if(!s.exists()) {
+      s.createNewFile()
+    }
+    s
+  }
+  
 }
 
 
@@ -26,19 +35,12 @@ object Config {
   
   lazy val helper =
     """Available arguments:
-
   --csv              : specify the CSV file to load in order to generate the scripts
-
   --template         : name of the script template
-
   --output           : name of the output file that will contain the scripts
-
   --scriptLimit      : number to limit the rows treated in the script
-
   --prescript        : name of the pre-script file
-
   --postscript       : name of the post-script file
-
   -escapeSingleQuote : allow to espace the single quote by doubling them
 """
   
