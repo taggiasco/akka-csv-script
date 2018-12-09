@@ -53,8 +53,18 @@ object Generator {
         }
       }
       
+      
       // reading the template
-      val template = config.loadScriptTemplate()
+      val template   = config.loadScriptTemplate()
+      val preScript  = config.loadPreScript()
+      val postScript = config.loadPostScript()
+      
+      
+      // create an infinite iterator of ints
+      val numbers: Source[Int, _] = Source.fromIterator(
+        () => Iterator.from(1)
+      )
+      
       
       def load(name: String): Source[ByteString, Future[IOResult]] = {
         val path = Paths.get(name)
@@ -62,51 +72,67 @@ object Generator {
         source
       }
       
+      
       val scannerFlow: Flow[ByteString, List[ByteString], NotUsed] =
         CsvParsing.lineScanner(CsvParsing.SemiColon)
-    
-    /*
-    
-    def reduceFlow(f: LogEntry => Particularity): Flow[LogEntry, (Particularity, LogEntry), NotUsed] = {
-      Flow[LogEntry].map(logEntry => (f(logEntry), logEntry))
-    }
-    */
       
-      def transformerFlow(template: String): Flow[Seq[String], ByteString, NotUsed] = {
-        Flow[Seq[String]].map(datas => {
-          val res = datas.zipWithIndex.foldLeft(template)((acc, elem) => {
-            val (data, position) = elem
-            acc.replaceAll(s"%COLUMN_${position+1}%", data)
-          })
-          ByteString(res + "\n\n")
+      
+      def transformData(data: String): String = {
+        if(config.singleQuoteEscape) {
+          data.replaceAll("'", "''")
+        } else {
+          data
+        }
+      }
+      
+      
+      def isUnlimitedOrBefore(lineNumber: Int): Boolean = {
+        config.scriptLimit match {
+          case Some(n) if config.csvHasHeaders && n >= lineNumber - 1 =>
+            false
+          case Some(n) if !config.csvHasHeaders && n >= lineNumber =>
+            false
+          case _ =>
+            true
+        }
+      }
+      
+      
+      def transformerFlow(template: String): Flow[(Seq[String], Int), ByteString, NotUsed] = {
+        Flow[(Seq[String], Int)].map(element => {
+          val (datas, lineNumber) = element
+          if(isUnlimitedOrBefore(lineNumber)) {
+            val res = datas.zipWithIndex.foldLeft(template)((acc, elem) => {
+              val (data, position) = elem
+              val transData = transformData(data)
+              acc.replaceAll(s"%COLUMN_${position+1}%", transData)
+            }).replaceAll("%ROW%", datas.mkString(";"))
+            if(config.csvHasHeaders && lineNumber == 1) {
+              if(config.csvNoHeaderLine) {
+                ByteString("")
+              } else {
+                ByteString(
+                  "/* \n" +
+                  res.replaceAll("/*", "/ *").replaceAll("*/", "* /") +
+                  "\n*/" +
+                  "\n\n"
+                )
+              }
+            } else {
+              ByteString(res + "\n\n")
+            }
+          } else {
+            ByteString("")
+          }
         })
       }
       
-      def transformerFlowAsString(template: String): Flow[Seq[String], String, NotUsed] = {
-        Flow[Seq[String]].map(datas => {
-          val res = datas.zipWithIndex.foldLeft(template)((acc, elem) => {
-            val (data, position) = elem
-            acc.replaceAll(s"%COLUMN_${position+1}%", data)
-          })
-          res
-        })
-      }
-      
-      def parse(source: Source[ByteString, Future[IOResult]], template: String)(implicit materializer: ActorMaterializer):
-        Future[Seq[String]] = {
-        val s =
-          source
-            .via(scannerFlow)
-            .map(_.map(_.utf8String))
-            .via(transformerFlowAsString(template))
-            .runWith(Sink.seq)
-        s
-      }
       
       val fileSink = FileIO.toPath(
         config.getOutputFile().toPath,
         options = Set(CREATE, WRITE, TRUNCATE_EXISTING)
       )
+      
       
       def parseToFile(source: Source[ByteString, Future[IOResult]], template: String)(implicit materializer: ActorMaterializer):
         Future[IOResult] = {
@@ -114,6 +140,7 @@ object Generator {
           source
             .via(scannerFlow)
             .map(_.map(_.utf8String))
+            .zipWith(numbers)((row, lineNumber) => (row, lineNumber))
             .via(transformerFlow(template))
             .runWith(fileSink)
         s

@@ -2,10 +2,15 @@ package ch.taggiasco.streams.csvscript
 
 import scala.io.Source
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.io.FileWriter
 
 
 case class Config(
   csvFile:           String,
+  csvHasHeaders:     Boolean,
+  csvNoHeaderLine:   Boolean,
   scriptTemplate:    String,
   scriptOutput:      Option[String],
   singleQuoteEscape: Boolean,
@@ -14,18 +19,43 @@ case class Config(
   postScriptFile:    Option[String]
 ) {
   
-  def loadScriptTemplate(): String = {
-    Utilities.using(Source.fromFile(scriptTemplate)) {
+  private val dateFormater = new SimpleDateFormat("dd.MM.yyyy hh:mm")
+  
+  private def loadFromFile(file: String): String = {
+    Utilities.using(Source.fromFile(file)) {
       source => source.getLines.mkString("\n")
     }
   }
   
-  def getOutputFile(): File = {
-    val s = new File(scriptOutput.getOrElse("output.script"))
-    if(!s.exists()) {
-      s.createNewFile()
+  def loadScriptTemplate(): String = loadFromFile(scriptTemplate)
+  
+  def loadPreScript(): String = preScriptFile.map(loadFromFile).getOrElse("")
+  
+  def loadPostScript(): String = postScriptFile.map(loadFromFile).getOrElse("")
+  
+  def appendPostScript() {
+    val content = loadPostScript()
+    if (content.nonEmpty) {
+      val f = getOutputFile()
+      Utilities.using(new FileWriter(f))(fw => {
+        fw.append(content)
+      })
     }
-    s
+  }
+  
+  def getOutputFile(): File = {
+    val date = dateFormater.format(Calendar.getInstance().getTime())
+    val f = new File(scriptOutput.getOrElse(s"output_$date.script"))
+    if(!f.exists()) {
+      f.createNewFile()
+    }
+    val content = loadPreScript()
+    if(content.nonEmpty) {
+      Utilities.using(new FileWriter(f))(fw => {
+        fw.append(content)
+      })
+    }
+    f
   }
   
 }
@@ -35,13 +65,15 @@ object Config {
   
   lazy val helper =
     """Available arguments:
-  --csv              : specify the CSV file to load in order to generate the scripts
-  --template         : name of the script template
-  --output           : name of the output file that will contain the scripts
-  --scriptLimit      : number to limit the rows treated in the script
-  --prescript        : name of the pre-script file
-  --postscript       : name of the post-script file
-  -escapeSingleQuote : allow to espace the single quote by doubling them
+  --csv                 : specify the CSV file to load in order to generate the scripts
+  -csv-has-header       : indicate that the CSV file contains a header line
+  -csv-no-header-line   : indicate that the CSV header line should be put as an example
+  --template            : name of the script template
+  --output              : name of the output file that will contain the scripts
+  --script-limit        : number to limit the rows treated in the script
+  --pre-script          : name of the pre-script file
+  --post-script         : name of the post-script file
+  -escape-single-quote  : allow to espace the single quote by doubling them
 """
   
   
@@ -67,12 +99,14 @@ object Config {
     val options = getOptions(Map(), args)
     Config(
       options.get("--csv").getOrElse( throw ConfigException("CSV file is mandatory") ),
+      options.get("-csv-has-header").isDefined,
+      options.get("-csv-no-header-line").isDefined,
       options.get("--template").getOrElse( throw ConfigException("CSV file is mandatory") ),
       options.get("--output"),
-      options.get("-escapeSingleQuote").isDefined,
-      options.get("--scriptLimit").flatMap(v => { scala.util.Try(v.toInt).toOption } ),
-      options.get("--prescript"),
-      options.get("--postscript")
+      options.get("-escape-single-quote").isDefined,
+      options.get("--script-limit").flatMap(v => { scala.util.Try(v.toInt).toOption } ),
+      options.get("--pre-script"),
+      options.get("--post-script")
     )
   }
 }
