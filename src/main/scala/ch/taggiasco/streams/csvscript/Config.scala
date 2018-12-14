@@ -16,10 +16,11 @@ case class Config(
   singleQuoteEscape: Boolean,
   scriptLimit:       Option[Int],
   preScriptFile:     Option[String],
-  postScriptFile:    Option[String]
+  postScriptFile:    Option[String],
+  log:               Boolean
 ) {
   
-  private val dateFormater = new SimpleDateFormat("dd.MM.yyyy hh:mm")
+  private val dateFormater = new SimpleDateFormat("dd.MM.yyyy_hh.mm")
   
   private def loadFromFile(file: String): String = {
     Utilities.using(Source.fromFile(file)) {
@@ -64,16 +65,21 @@ case class Config(
 object Config {
   
   lazy val helper =
-    """Available arguments:
+    """
+Mandatory arguments:
   --csv                 : specify the CSV file to load in order to generate the scripts
-  -csv-has-header       : indicate that the CSV file contains a header line
-  -csv-no-header-line   : indicate that the CSV header line should be put as an example
   --template            : name of the script template
-  --output              : name of the output file that will contain the scripts
+Available options:
+  -csv-has-header       : indicate that the CSV file contains a header line
+  -csv-no-header-line   : indicate that the CSV header line should not be put as an example
+  --output              : name of the output file that will contain the scripts, by default, "output_{date}.script" will be used.
   --script-limit        : number to limit the rows treated in the script
   --pre-script          : name of the pre-script file
   --post-script         : name of the post-script file
   -escape-single-quote  : allow to espace the single quote by doubling them
+  -help                 : force to output the different options
+  -log                  : log every element of the stream
+
 """
   
   
@@ -97,6 +103,10 @@ object Config {
   
   def apply(args: List[String]): Config = {
     val options = getOptions(Map(), args)
+    val help = options.get("-help").isDefined
+    if(help) {
+      throw StopException
+    }
     Config(
       options.get("--csv").getOrElse( throw ConfigException("CSV file is mandatory") ),
       options.get("-csv-has-header").isDefined,
@@ -106,7 +116,8 @@ object Config {
       options.get("-escape-single-quote").isDefined,
       options.get("--script-limit").flatMap(v => { scala.util.Try(v.toInt).toOption } ),
       options.get("--pre-script"),
-      options.get("--post-script")
+      options.get("--post-script"),
+      options.get("-log").isDefined
     )
   }
 }

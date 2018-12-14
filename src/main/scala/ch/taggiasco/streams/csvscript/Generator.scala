@@ -17,12 +17,15 @@ import scala.util.{Try, Failure, Success}
 import scala.concurrent.Future
 
 import com.typesafe.config.ConfigFactory
+import akka.event.Logging
+import akka.stream.Attributes
+import akka.event.LogSource
+
 
 
 object Generator {
   
-  private case class EndException(msg: String) extends Exception(msg)
-  private case object StopException extends Exception
+  import Utilities._
   
   
   private def endApp(msg: String)(implicit system: ActorSystem): Unit = {
@@ -37,6 +40,7 @@ object Generator {
       implicit val system = ActorSystem("system")
       implicit val materializer = ActorMaterializer()
       implicit val executionContext = materializer.executionContext
+      implicit val adapter = Logging(system, "logger")
       
       // if no arguments, we print help
       if (args.length == 0) {
@@ -47,11 +51,12 @@ object Generator {
       val config = try {
         Config(args.toList)
       } catch {
-        case e: ConfigException => {
+        case e: Exception => {
           system.terminate()
           throw e
         }
       }
+      adapter.log(Attributes.LogLevels.Info, config.toString)
       
       
       // reading the template
@@ -66,10 +71,18 @@ object Generator {
       )
       
       
-      def load(name: String): Source[ByteString, Future[IOResult]] = {
+      def load(config: Config, name: String): Source[ByteString, Future[IOResult]] = {
         val path = Paths.get(name)
         val source: Source[ByteString, Future[IOResult]] = FileIO.fromPath(path)
-        source
+        source.when(config.log)(s => {
+          s.log("logger").withAttributes(
+            Attributes.logLevels(
+              onElement = Attributes.LogLevels.Off,
+              onFinish = Attributes.LogLevels.Info,
+              onFailure = Attributes.LogLevels.Error
+            )
+          )
+        })
       }
       
       
@@ -77,7 +90,7 @@ object Generator {
         CsvParsing.lineScanner(CsvParsing.SemiColon)
       
       
-      def transformData(data: String): String = {
+      def transformData(config: Config, data: String): String = {
         if(config.singleQuoteEscape) {
           data.replaceAll("'", "''")
         } else {
@@ -86,7 +99,7 @@ object Generator {
       }
       
       
-      def isUnlimitedOrBefore(lineNumber: Int): Boolean = {
+      def isUnlimitedOrBefore(config: Config, lineNumber: Int): Boolean = {
         config.scriptLimit match {
           case Some(n) if config.csvHasHeaders && n >= lineNumber - 1 =>
             false
@@ -98,13 +111,13 @@ object Generator {
       }
       
       
-      def transformerFlow(template: String): Flow[(Seq[String], Int), ByteString, NotUsed] = {
+      def transformerFlow(config: Config, template: String): Flow[(Seq[String], Int), ByteString, NotUsed] = {
         Flow[(Seq[String], Int)].map(element => {
           val (datas, lineNumber) = element
-          if(isUnlimitedOrBefore(lineNumber)) {
+          if(isUnlimitedOrBefore(config, lineNumber)) {
             val res = datas.zipWithIndex.foldLeft(template)((acc, elem) => {
               val (data, position) = elem
-              val transData = transformData(data)
+              val transData = transformData(config, data)
               acc.replaceAll(s"%COLUMN_${position+1}%", transData)
             }).replaceAll("%ROW%", datas.mkString(";"))
             if(config.csvHasHeaders && lineNumber == 1) {
@@ -128,49 +141,40 @@ object Generator {
       }
       
       
-      val fileSink = FileIO.toPath(
-        config.getOutputFile().toPath,
-        options = Set(CREATE, WRITE, TRUNCATE_EXISTING)
-      )
+      def getFileSink(config: Config) = {
+        FileIO.toPath(
+          config.getOutputFile().toPath,
+          options = Set(CREATE, WRITE, TRUNCATE_EXISTING)
+        )
+      }
       
       
-      def parseToFile(source: Source[ByteString, Future[IOResult]], template: String)(implicit materializer: ActorMaterializer):
+      def parseToFile(config: Config, source: Source[ByteString, Future[IOResult]], template: String)(implicit materializer: ActorMaterializer):
         Future[IOResult] = {
-        val s =
+        val sink = getFileSink(config)
+        val src =
           source
             .via(scannerFlow)
             .map(_.map(_.utf8String))
             .zipWith(numbers)((row, lineNumber) => (row, lineNumber))
-            .via(transformerFlow(template))
-            .runWith(fileSink)
-        s
+            .via(transformerFlow(config, template))
+            .runWith(sink)
+        src
       }
-      val f = parseToFile(load(config.csvFile), template)
+      
+      
+      val f = parseToFile(config, load(config, config.csvFile), template)
+      
       f.onComplete {
         case Success(result) => {
-          println("It's done!")
+          adapter.log(Attributes.LogLevels.Info, "Script generation done!")
           system.terminate()
         }
         case Failure(e) =>
-          println(s"Failure: ${e.getMessage}")
+          adapter.error(e, s"Failure: ${e.getMessage}")
           system.terminate()
       }
       
-//      val future = parse(load(config.csvFile), template)
-//      future.onComplete {
-//        case Success(result) => {
-//          result.foreach(res => {
-//            println("Result is : ")
-//            println("---")
-//            println(res)
-//            println("---")
-//          })
-//          system.terminate()
-//        }
-//        case Failure(e) =>
-//          println(s"Failure: ${e.getMessage}")
-//          system.terminate()
-//      }
     } catch {
       case StopException => {
         println(Config.helper)
