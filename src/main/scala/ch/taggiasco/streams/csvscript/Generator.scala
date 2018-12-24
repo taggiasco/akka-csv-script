@@ -61,8 +61,8 @@ object Generator {
       
       // reading the template
       val template   = config.loadScriptTemplate()
-      val preScript  = config.loadPreScript()
-      val postScript = config.loadPostScript()
+//      val preScript  = config.loadPreScript()
+//      val postScript = config.loadPostScript()
       
       
       // create an infinite iterator of ints
@@ -86,8 +86,14 @@ object Generator {
       }
       
       
-      val scannerFlow: Flow[ByteString, List[ByteString], NotUsed] =
-        CsvParsing.lineScanner(CsvParsing.SemiColon)
+      def scannerFlow(config: Config): Flow[ByteString, List[ByteString], NotUsed] = {
+        if(config.csvComma) {
+          CsvParsing.lineScanner(CsvParsing.Comma)
+        } else {
+          CsvParsing.lineScanner(CsvParsing.SemiColon)
+        }
+      }
+        
       
       
       def transformData(config: Config, data: String): String = {
@@ -102,10 +108,12 @@ object Generator {
       def isUnlimitedOrBefore(config: Config, lineNumber: Int): Boolean = {
         config.scriptLimit match {
           case Some(n) if config.csvHasHeaders && n >= lineNumber - 1 =>
-            false
+            true
           case Some(n) if !config.csvHasHeaders && n >= lineNumber =>
+            true
+          case Some(n) =>
             false
-          case _ =>
+          case None =>
             true
         }
       }
@@ -125,8 +133,8 @@ object Generator {
                 ByteString("")
               } else {
                 ByteString(
-                  "/* \n" +
-                  res.replaceAll("/*", "/ *").replaceAll("*/", "* /") +
+                  "/* sample based on headers\n" +
+                  res.replaceAll("/\\*", "/ \\*").replaceAll("\\*/", "\\* /") +
                   "\n*/" +
                   "\n\n"
                 )
@@ -144,8 +152,18 @@ object Generator {
       def getFileSink(config: Config) = {
         FileIO.toPath(
           config.getOutputFile().toPath,
-          options = Set(CREATE, WRITE, TRUNCATE_EXISTING)
+          options = Set(APPEND) // CREATE, WRITE, TRUNCATE_EXISTING)
         )
+      }
+      
+      
+      def mapToListFlow(): Flow[Map[String, String], List[String], NotUsed] = {
+        Flow[Map[String, String]].map(_.values.toList)
+      }
+      
+      
+      def mappingFlow(config: Config): Flow[List[ByteString], List[String], NotUsed] = {
+        CsvToMap.toMapAsStrings(config.csvCharset).via(mapToListFlow)
       }
       
       
@@ -154,8 +172,8 @@ object Generator {
         val sink = getFileSink(config)
         val src =
           source
-            .via(scannerFlow)
-            .map(_.map(_.utf8String))
+            .via(scannerFlow(config))
+            .via(mappingFlow(config))
             .zipWith(numbers)((row, lineNumber) => (row, lineNumber))
             .via(transformerFlow(config, template))
             .runWith(sink)
@@ -167,6 +185,8 @@ object Generator {
       
       f.onComplete {
         case Success(result) => {
+          // add pre and post scripts
+          config.appendPostScript()
           adapter.log(Attributes.LogLevels.Info, "Script generation done!")
           system.terminate()
         }

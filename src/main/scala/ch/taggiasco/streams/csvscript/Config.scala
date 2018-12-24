@@ -5,12 +5,20 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.io.FileWriter
+import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.StandardOpenOption
+import java.nio.file.Paths
+import java.nio.file.Path
 
 
 case class Config(
   csvFile:           String,
   csvHasHeaders:     Boolean,
   csvNoHeaderLine:   Boolean,
+  csvComma:          Boolean,
+  csvCharset:        Charset,
   scriptTemplate:    String,
   scriptOutput:      Option[String],
   singleQuoteEscape: Boolean,
@@ -28,35 +36,42 @@ case class Config(
     }
   }
   
-  def loadScriptTemplate(): String = loadFromFile(scriptTemplate)
   
-  def loadPreScript(): String = preScriptFile.map(loadFromFile).getOrElse("")
-  
-  def loadPostScript(): String = postScriptFile.map(loadFromFile).getOrElse("")
-  
-  def appendPostScript() {
-    val content = loadPostScript()
-    if (content.nonEmpty) {
-      val f = getOutputFile()
-      Utilities.using(new FileWriter(f))(fw => {
-        fw.append(content)
-      })
-    }
-  }
-  
-  def getOutputFile(): File = {
+  def getOutputFile(apprendPreScript: Boolean = true): File = {
     val date = dateFormater.format(Calendar.getInstance().getTime())
     val f = new File(scriptOutput.getOrElse(s"output_$date.script"))
     if(!f.exists()) {
       f.createNewFile()
     }
-    val content = loadPreScript()
-    if(content.nonEmpty) {
-      Utilities.using(new FileWriter(f))(fw => {
-        fw.append(content)
-      })
+    if(apprendPreScript) {
+      writePreScript()
     }
     f
+  }
+  
+  def getOutputPath(): Path = {
+    getOutputFile(false).toPath()
+  }
+  
+  
+  def loadScriptTemplate(): String = loadFromFile(scriptTemplate)
+  
+  private def loadPreScript(): String = preScriptFile.map(loadFromFile).getOrElse("")
+  
+  private def loadPostScript(): String = postScriptFile.map(loadFromFile).getOrElse("")
+  
+  def appendPostScript() {
+    val content = loadPostScript()
+    if(content.nonEmpty) {
+      Files.write(getOutputPath(), (content + "\n\n").getBytes(), StandardOpenOption.APPEND)
+    }
+  }
+  
+  private def writePreScript() {
+    val content = loadPreScript()
+    if(content.nonEmpty) {
+      Files.write(getOutputPath(), (content + "\n\n").getBytes(), StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+    }
   }
   
 }
@@ -69,9 +84,12 @@ object Config {
 Mandatory arguments:
   --csv                 : specify the CSV file to load in order to generate the scripts
   --template            : name of the script template
+
 Available options:
+  -csv-comma            : indicate that the values in the CSV file are separated with a comma (by default, the semi-colon is used)
   -csv-has-header       : indicate that the CSV file contains a header line
   -csv-no-header-line   : indicate that the CSV header line should not be put as an example
+  --csv-charset         : name of the charset encoding of the CSV file (utf-8, iso-8859-1, ...)
   --output              : name of the output file that will contain the scripts, by default, "output_{date}.script" will be used.
   --script-limit        : number to limit the rows treated in the script
   --pre-script          : name of the pre-script file
@@ -100,6 +118,18 @@ Available options:
     }
   }
   
+  private def identifyCharset(arg: Option[String]): Charset = {
+    arg.map(_.toLowerCase().replaceAll("-", "").replaceAll("_", "")) match {
+      case Some(v) if v == "iso88591" => StandardCharsets.ISO_8859_1
+      case Some(v) if v == "usascii"  => StandardCharsets.US_ASCII
+      case Some(v) if v == "utf16"    => StandardCharsets.UTF_16
+      case Some(v) if v == "utf16be"  => StandardCharsets.UTF_16BE
+      case Some(v) if v == "utf16le"  => StandardCharsets.UTF_16LE
+      case Some(v) if v == "utf8"     => StandardCharsets.UTF_8
+      case _                          => StandardCharsets.UTF_8
+    }
+  }
+  
   
   def apply(args: List[String]): Config = {
     val options = getOptions(Map(), args)
@@ -111,6 +141,8 @@ Available options:
       options.get("--csv").getOrElse( throw ConfigException("CSV file is mandatory") ),
       options.get("-csv-has-header").isDefined,
       options.get("-csv-no-header-line").isDefined,
+      options.get("-csv-comma").isDefined,
+      identifyCharset(options.get("--csv-charset")),
       options.get("--template").getOrElse( throw ConfigException("CSV file is mandatory") ),
       options.get("--output"),
       options.get("-escape-single-quote").isDefined,
