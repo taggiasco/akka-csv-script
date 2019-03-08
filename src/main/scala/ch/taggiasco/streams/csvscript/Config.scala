@@ -25,13 +25,20 @@ case class Config(
   scriptLimit:       Option[Int],
   preScriptFile:     Option[String],
   postScriptFile:    Option[String],
+  folder:            Option[String],
   log:               Boolean
 ) {
+  
+  private val defaultValue = "*****"
+  
+  val valueForRow = defaultValue
   
   private val dateFormater = new SimpleDateFormat("dd.MM.yyyy_hh.mm")
   
   private def loadFromFile(file: String): String = {
-    Utilities.using(Source.fromFile(file)) {
+    val path = folder.map(_ + "/").getOrElse("") + file
+    println(path)
+    Utilities.using(Source.fromFile(path)) {
       source => source.getLines.mkString("\n")
     }
   }
@@ -39,7 +46,7 @@ case class Config(
   
   def getOutputFile(apprendPreScript: Boolean = true): File = {
     val date = dateFormater.format(Calendar.getInstance().getTime())
-    val f = new File(scriptOutput.getOrElse(s"output_$date.script"))
+    val f = new File(folder.map(_ + "/").getOrElse("") + scriptOutput.getOrElse(s"output_$date.script"))
     if(!f.exists()) {
       f.createNewFile()
     }
@@ -63,14 +70,14 @@ case class Config(
   def appendPostScript() {
     val content = loadPostScript()
     if(content.nonEmpty) {
-      Files.write(getOutputPath(), (content + "\n\n").getBytes(), StandardOpenOption.APPEND)
+      Files.write(getOutputPath(), (content + "\n\n").getBytes(csvCharset), StandardOpenOption.APPEND)
     }
   }
   
   private def writePreScript() {
     val content = loadPreScript()
     if(content.nonEmpty) {
-      Files.write(getOutputPath(), (content + "\n\n").getBytes(), StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+      Files.write(getOutputPath(), (content + "\n\n").getBytes(csvCharset), StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
     }
   }
   
@@ -94,6 +101,7 @@ Available options:
   --script-limit        : number to limit the rows treated in the script
   --pre-script          : name of the pre-script file
   --post-script         : name of the post-script file
+  --folder              : folder that contains the template, pre- and post-script, and where the generated script will be created
   -escape-single-quote  : allow to espace the single quote by doubling them
   -help                 : force to output the different options
   -log                  : log every element of the stream
@@ -149,6 +157,7 @@ Available options:
       options.get("--script-limit").flatMap(v => { scala.util.Try(v.toInt).toOption } ),
       options.get("--pre-script"),
       options.get("--post-script"),
+      options.get("--folder"),
       options.get("-log").isDefined
     )
   }

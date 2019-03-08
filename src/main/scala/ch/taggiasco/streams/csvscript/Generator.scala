@@ -23,6 +23,7 @@ import akka.event.LogSource
 
 
 
+
 object Generator {
   
   import Utilities._
@@ -72,13 +73,13 @@ object Generator {
       
       
       def load(config: Config, name: String): Source[ByteString, Future[IOResult]] = {
-        val path = Paths.get(name)
+        val path = Paths.get(config.folder.map(_+"/").getOrElse("") + name)
         val source: Source[ByteString, Future[IOResult]] = FileIO.fromPath(path)
         source.when(config.log)(s => {
           s.log("logger").withAttributes(
             Attributes.logLevels(
               onElement = Attributes.LogLevels.Off,
-              onFinish = Attributes.LogLevels.Info,
+              onFinish  = Attributes.LogLevels.Info,
               onFailure = Attributes.LogLevels.Error
             )
           )
@@ -119,15 +120,26 @@ object Generator {
       }
       
       
-      def transformerFlow(config: Config, template: String): Flow[(Seq[String], Int), ByteString, NotUsed] = {
-        Flow[(Seq[String], Int)].map(element => {
+      def buildKey(n: Int): String = s"COLUMN_$n"
+      
+      
+      def transformerFlow(config: Config, template: String): Flow[(Map[String, String], Int), ByteString, NotUsed] = {
+        Flow[(Map[String, String], Int)].map(element => {
           val (datas, lineNumber) = element
           if(isUnlimitedOrBefore(config, lineNumber)) {
+            val row = datas.keys.toList.map(_.substring(7).toInt).sorted.foldLeft("")((acc, key) => {
+              acc match {
+                case "" =>
+                  datas.getOrElse(buildKey(key), config.valueForRow)
+                case _ =>
+                  acc + ";" + datas.getOrElse(buildKey(key), config.valueForRow)
+              }
+            })
             val res = datas.zipWithIndex.foldLeft(template)((acc, elem) => {
               val (data, position) = elem
-              val transData = transformData(config, data)
-              acc.replaceAll(s"%COLUMN_${position+1}%", transData)
-            }).replaceAll("%ROW%", datas.mkString(";"))
+              val transData = transformData(config, data._2)
+              acc.replaceAll(s"%${data._1}%", transData)
+            }).replaceAll("%ROW%", row)
             if(config.csvHasHeaders && lineNumber == 1) {
               if(config.csvNoHeaderLine) {
                 ByteString("")
@@ -147,8 +159,6 @@ object Generator {
           }
         })
       }
-      
-      
       def getFileSink(config: Config) = {
         FileIO.toPath(
           config.getOutputFile().toPath,
@@ -157,13 +167,14 @@ object Generator {
       }
       
       
-      def mapToListFlow(): Flow[Map[String, String], List[String], NotUsed] = {
-        Flow[Map[String, String]].map(_.values.toList)
+      def mappingFlow(config: Config): Flow[List[ByteString], Map[String, String], NotUsed] = {
+        val headers = (1 to 100).map(n => buildKey(n)).toList
+        CsvToMap.withHeadersAsStrings(config.csvCharset, headers:_*)
       }
       
       
-      def mappingFlow(config: Config): Flow[List[ByteString], List[String], NotUsed] = {
-        CsvToMap.toMapAsStrings(config.csvCharset).via(mapToListFlow)
+      def isNotEmpty(elements: List[ByteString]): Boolean = {
+        !elements.filter(elem => !elem.isEmpty).isEmpty
       }
       
       
@@ -173,6 +184,7 @@ object Generator {
         val src =
           source
             .via(scannerFlow(config))
+            .filter(isNotEmpty)
             .via(mappingFlow(config))
             .zipWith(numbers)((row, lineNumber) => (row, lineNumber))
             .via(transformerFlow(config, template))
